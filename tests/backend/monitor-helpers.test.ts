@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  filterPaneLines,
   SEP,
   parseSessions,
   parseWindows,
@@ -268,5 +269,16 @@ describe("shellEscape", () => {
     expect(shellEscape("simple")).toBe("'simple'");
     expect(shellEscape("it's")).toBe("'it'\\''s'");
     expect(shellEscape("$(rm -rf /)")).toBe("'$(rm -rf /)'");
+  });
+});
+
+describe("filterPaneLines", () => {
+  it("numbers matching lines like grep -n -i -F and stops at the limit", () => {
+    const output = "Build OK\nerror: disk\nfine\nERROR again\nerror three";
+    expect(filterPaneLines(output, "error", 2)).toEqual([
+      "2:error: disk",
+      "4:ERROR again",
+    ]);
+    expect(filterPaneLines(output, "a.b", 5)).toEqual([]);
   });
 });

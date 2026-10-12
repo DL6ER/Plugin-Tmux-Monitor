@@ -114,7 +114,9 @@ describe("createTmuxSessionsService", () => {
     };
 
     await expect(service.waitForSession(client, "new")).resolves.toBe("new");
-    expect(commands[0]).toContain(`has-session -t '\\''=new'\\''`);
+    expect(commands.find((c) => c.includes("has-session"))).toContain(
+      "has-session -t =new",
+    );
   });
 
   it("waitForSession() falls back to the requested name on timeout", async () => {

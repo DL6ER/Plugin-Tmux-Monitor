@@ -7,6 +7,7 @@ import type { Client, ClientChannel } from "ssh2";
 import { describe, expect, it } from "vitest";
 import {
   attachOrCreateTmuxSession,
+  buildTmuxCommand,
   detectTmux,
   tmuxCommand,
   withTmuxPath,
@@ -76,7 +77,7 @@ describe("tmux command path handling", () => {
     });
     expect(commands).toEqual([
       `/bin/sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:/opt/bin:/usr/pkg/bin:"$PATH"; export PATH; tmux -u -V'`,
-      `/bin/sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:/opt/bin:/usr/pkg/bin:"$PATH"; export PATH; tmux -u list-sessions -F "#{session_name}<<TMX>>#{session_created}<<TMX>>#{session_activity}<<TMX>>#{session_windows}<<TMX>>#{session_attached}" 2>/dev/null'`,
+      `/bin/sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:/opt/bin:/usr/pkg/bin:"$PATH"; export PATH; tmux -u list-sessions -F '\\''#{session_name}<<TMX>>#{session_created}<<TMX>>#{session_activity}<<TMX>>#{session_windows}<<TMX>>#{session_attached}'\\'''`,
     ]);
   });
 });
@@ -156,5 +157,87 @@ describe("session-scoped tmux mouse", () => {
     expect(command).toContain("mouse on");
     expect(command).toContain("history-limit 50000");
     expect(command).not.toMatch(/set -g|set-hook|bind-key|set-clipboard/);
+  });
+});
+
+describe("tmux on a host without /bin/sh", () => {
+  function windowsClient(commands: string[]): Client {
+    return {
+      exec(command: string, callback: (error: null, stream: never) => void) {
+        commands.push(command);
+        const stream = new EventEmitter() as EventEmitter & {
+          stderr: EventEmitter;
+        };
+        stream.stderr = new EventEmitter();
+        callback(null, stream as never);
+        queueMicrotask(() => {
+          if (command.startsWith("/bin/sh")) {
+            stream.stderr.emit(
+              "data",
+              Buffer.from("'/bin/sh' is not recognized as a command"),
+            );
+            stream.emit("close", 1);
+            return;
+          }
+          stream.emit(
+            "data",
+            Buffer.from(
+              command.includes("list-sessions")
+                ? "main<<TMX>>1<<TMX>>2<<TMX>>3<<TMX>>0\r\n"
+                : "tmux 3.3.8\r\n",
+            ),
+          );
+          stream.emit("close", 0);
+        });
+      },
+    } as unknown as Client;
+  }
+
+  it("falls back to running tmux straight from cmd.exe or PowerShell", async () => {
+    const commands: string[] = [];
+    await expect(detectTmux(windowsClient(commands))).resolves.toEqual({
+      available: true,
+      sessions: [
+        {
+          name: "main",
+          created: 1,
+          lastActivity: 2,
+          windows: 3,
+          attachedClients: 0,
+        },
+      ],
+    });
+    expect(commands.slice(1)).toEqual([
+      "tmux -u -V",
+      'tmux -u list-sessions -F "#{session_name}<<TMX>>#{session_created}<<TMX>>#{session_activity}<<TMX>>#{session_windows}<<TMX>>#{session_attached}"',
+    ]);
+  });
+
+  it("quotes with double quotes and separates commands with a quoted ;", () => {
+    expect(
+      buildTmuxCommand(
+        "windows",
+        ["select-window", "-t", "%3"],
+        ["rename-session", "-t", "=a b", 'say "hi"'],
+      ),
+    ).toBe(
+      'tmux -u select-window -t "%3" ";" rename-session -t "=a b" "say \\"hi\\""',
+    );
+  });
+
+  it("attaches without && exit, which PowerShell 5 lacks", () => {
+    let command = "";
+    attachOrCreateTmuxSession(
+      {
+        write: (value: string) => (command = value),
+      } as unknown as ClientChannel,
+      "main",
+      undefined,
+      true,
+      "windows",
+    );
+    expect(command).toBe(
+      'tmux -u set-option -q -t =main mouse on ";" set-option -q -t =main history-limit 50000 ";" attach-session -t =main\r',
+    );
   });
 });
